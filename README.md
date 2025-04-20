@@ -1,23 +1,6 @@
-# Secure Voting System with Face Recognition
+# Blockchain-Based Voting System with Face Recognition
 
 A web-based voting system that implements two-factor authentication using both password and face recognition for enhanced security.
-
-## Features
-
-- User registration with face capture
-- Secure login with two-factor authentication:
-  - Password verification
-  - Face recognition verification
-- Blockchain-based voting system
-- Modern and responsive UI using Bootstrap
-
-## Prerequisites
-
-Before running this project, make sure you have the following installed:
-- [Node.js](https://nodejs.org/) (v14 or higher)
-- [MongoDB](https://www.mongodb.com/try/download/community)
-- A modern web browser (Chrome, Firefox, or Edge recommended)
-- Webcam access for face recognition
 
 ## Installation
 
@@ -37,15 +20,6 @@ npm install
 ```bash
 cd ../backend
 npm install
-```
-
-## Configuration
-
-1. Backend MongoDB Configuration:
-   - Open `backend/index.js`
-   - Replace the MongoDB connection URL with your own:
-```javascript
-mongoose.connect("your-mongodb-connection-string");
 ```
 
 ## Running the Application
@@ -94,7 +68,7 @@ The frontend will start on http://localhost:5173
    - Ensure good lighting conditions
    - Position your face clearly in front of the camera
    - Make sure you've granted camera permissions
-   - Try refreshing the page if models don't load
+   - Try refreshing the page if the models don't load
 
 2. Connection Issues:
    - Verify MongoDB is running
@@ -115,19 +89,3 @@ The frontend will start on http://localhost:5173
   - Express.js
   - MongoDB with Mongoose
   - CORS for cross-origin requests
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-For support, please open an issue in the GitHub repository or contact the maintainers.
