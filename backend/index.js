@@ -22,22 +22,65 @@ const calculateFaceDistance = (descriptor1, descriptor2) => {
   );
 };
 
-app.post("/register", (req, res) => {
+// Helper function to check if a face already exists in the database
+const findMatchingFace = async (faceDescriptor) => {
+  const users = await FormDataModel.find({});
+  const threshold = 0.6; // Same threshold as used in verification
+
+  for (const user of users) {
+    if (user.faceData && user.faceData.descriptor) {
+      const distance = calculateFaceDistance(faceDescriptor, user.faceData.descriptor);
+      if (distance < threshold) {
+        return user; // Return the matching user
+      }
+    }
+  }
+  return null; // No matching face found
+};
+
+app.post("/register", async (req, res) => {
   const { email, password, faceData } = req.body;
   
   if (!faceData || !faceData.descriptor) {
-    return res.status(400).json({ error: "Face data is required for registration" });
+    return res.status(400).json({ 
+      success: false,
+      message: "Face data is required for registration" 
+    });
   }
 
-  FormDataModel.findOne({ email: email }).then((user) => {
-    if (user) {
-      res.json("Already registered");
-    } else {
-      FormDataModel.create(req.body)
-        .then((log_reg_form) => res.json(log_reg_form))
-        .catch((err) => res.json(err));
+  try {
+    // First check if email already exists
+    const existingEmail = await FormDataModel.findOne({ email: email });
+    if (existingEmail) {
+      return res.json({ 
+        success: false,
+        message: "Email already registered"
+      });
     }
-  });
+
+    // Then check if face already exists
+    const existingFace = await findMatchingFace(faceData.descriptor);
+    if (existingFace) {
+      return res.json({ 
+        success: false,
+        message: "This face is already registered with a different email"
+      });
+    }
+
+    // If both checks pass, create new user
+    const newUser = await FormDataModel.create(req.body);
+    res.json({ 
+      success: true,
+      message: "Registration successful",
+      user: newUser
+    });
+  } catch (error) {
+    console.error("Registration error:", error);
+    res.status(500).json({ 
+      success: false,
+      message: "An error occurred during registration"
+    });
+  }
 });
 
 app.post("/login", (req, res) => {
