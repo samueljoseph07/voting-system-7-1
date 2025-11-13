@@ -1,151 +1,253 @@
-const cors = require("cors");
+// backend/index.js (patched)
+// Secure & improved version: bcrypt, JWT, helmet, rate-limit, input validation, env usage.
+
+require("dotenv").config();
 const express = require("express");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const cors = require("cors");
 const mongoose = require("mongoose");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const { body, validationResult } = require("express-validator");
 const FormDataModel = require("./models/FormData");
 
 const app = express();
+
+// Security & parsing middlewares
+app.use(helmet());
 app.use(express.json());
-app.use(cors());
 
-mongoose.connect(
-  "mongodb+srv://josephsamuel1236:CJwyrSH8lXdZtlw9@blockchainvotingdatabas.rf1jx.mongodb.net/?retryWrites=true&w=majority&appName=BlockchainVotingDatabase"
-);
+// CORS: restrict to frontend origin in production
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+app.use(cors({ origin: FRONTEND_URL }));
 
-// Helper function to calculate Euclidean distance between face descriptors
+// Rate limiting - adjust limits for your usage
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // max requests per IP per windowMs
+  message: { success: false, message: "Too many requests, please try again later." },
+});
+app.use(apiLimiter);
+
+// Config & constants
+const MONGO_URI = process.env.MONGO_URI;
+const JWT_SECRET = process.env.JWT_SECRET;
+const PORT = process.env.PORT || 3001;
+const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS || "12", 10);
+const FACE_MATCH_THRESHOLD = 0.6; // tune if needed
+
+if (!MONGO_URI || !JWT_SECRET) {
+  console.error("MONGO_URI and JWT_SECRET must be set in environment variables.");
+  process.exit(1);
+}
+
+// Connect to MongoDB
+mongoose.connect(MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => {
+  console.log("Connected to MongoDB.");
+}).catch((err) => {
+  console.error("MongoDB connection error:", err);
+  process.exit(1);
+});
+
+// Utility: Euclidean distance
 const calculateFaceDistance = (descriptor1, descriptor2) => {
   if (!descriptor1 || !descriptor2 || descriptor1.length !== descriptor2.length) {
     return Infinity;
   }
-  
-  return Math.sqrt(
-    descriptor1.reduce((sum, val, i) => sum + Math.pow(val - descriptor2[i], 2), 0)
-  );
+  let sum = 0;
+  for (let i = 0; i < descriptor1.length; i++) {
+    const d = descriptor1[i] - descriptor2[i];
+    sum += d * d;
+  }
+  return Math.sqrt(sum);
 };
 
-// Helper function to check if a face already exists in the database
+// Improved face search: use projection + cursor to avoid loading entire collection at once
 const findMatchingFace = async (faceDescriptor) => {
-  const users = await FormDataModel.find({});
-  const threshold = 0.6; // Same threshold as used in verification
-
-  for (const user of users) {
-    if (user.faceData && user.faceData.descriptor) {
-      const distance = calculateFaceDistance(faceDescriptor, user.faceData.descriptor);
-      if (distance < threshold) {
-        return user; // Return the matching user
+  // Only project fields we need
+  const cursor = FormDataModel.find({}, { email: 1, faceData: 1 }).cursor();
+  for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
+    const stored = doc.faceData && doc.faceData.descriptor;
+    if (stored && Array.isArray(stored) && stored.length === faceDescriptor.length) {
+      const distance = calculateFaceDistance(faceDescriptor, stored);
+      if (distance < FACE_MATCH_THRESHOLD) {
+        // return minimal matching info (do NOT return full descriptor)
+        return { id: doc._id, email: doc.email };
       }
     }
   }
-  return null; // No matching face found
+  return null;
 };
 
-app.post("/register", async (req, res) => {
-  const { email, password, faceData } = req.body;
-  
-  if (!faceData || !faceData.descriptor) {
-    return res.status(400).json({ 
-      success: false,
-      message: "Face data is required for registration" 
-    });
+// JWT middleware to protect routes
+const requireAuth = (req, res, next) => {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith("Bearer ")) {
+    return res.status(401).json({ success: false, message: "Authentication required" });
   }
-
+  const token = auth.split(" ")[1];
   try {
-    // First check if email already exists
-    const existingEmail = await FormDataModel.findOne({ email: email });
-    if (existingEmail) {
-      return res.json({ 
-        success: false,
-        message: "Email already registered"
-      });
-    }
-
-    // Then check if face already exists
-    const existingFace = await findMatchingFace(faceData.descriptor);
-    if (existingFace) {
-      return res.json({ 
-        success: false,
-        message: "This face is already registered with a different email"
-      });
-    }
-
-    // If both checks pass, create new user
-    const newUser = await FormDataModel.create(req.body);
-    res.json({ 
-      success: true,
-      message: "Registration successful",
-      user: newUser
-    });
-  } catch (error) {
-    console.error("Registration error:", error);
-    res.status(500).json({ 
-      success: false,
-      message: "An error occurred during registration"
-    });
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload; // { sub: userId, email, iat, exp }
+    return next();
+  } catch (err) {
+    return res.status(401).json({ success: false, message: "Invalid or expired token" });
   }
-});
+};
 
-app.post("/login", (req, res) => {
-  const { email, password } = req.body;
-  FormDataModel.findOne({ email: email }).then((user) => {
-    if (user) {
-      if (user.password === password) {
-        res.json({ success: true, message: "Credentials verified" });
-      } else {
-        res.json({ success: false, message: "Wrong password" });
+// ---------- Routes ----------
+
+// Registration
+app.post(
+  "/register",
+  [
+    body("email").isEmail().normalizeEmail(),
+    body("password").isLength({ min: 6 }),
+    body("name").optional().isString().trim().escape(),
+    body("faceData").custom(fd => fd && Array.isArray(fd.descriptor) && fd.descriptor.length > 0)
+  ],
+  async (req, res) => {
+    // Validate inputs
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, message: "Invalid input" });
+
+    const { name, email, password, faceData } = req.body;
+
+    try {
+      // Prevent user enumeration: perform checks but return generic message on conflicts
+      const existingEmail = await FormDataModel.findOne({ email: email });
+      if (existingEmail) {
+        return res.status(409).json({ success: false, message: "Registration failed" });
       }
-    } else {
-      res.json({ success: false, message: "No records found!" });
+
+      // Check if face already exists
+      const existingFace = await findMatchingFace(faceData.descriptor);
+      if (existingFace) {
+        return res.status(409).json({ success: false, message: "Registration failed" });
+      }
+
+      // Hash password
+      const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+      // Create user - store hashed password and descriptor (sensitive)
+      const newUser = await FormDataModel.create({
+        name,
+        email,
+        password: hashed,
+        faceData: {
+          descriptor: faceData.descriptor,
+          // optionally store landmarks if provided
+          landmarks: faceData.landmarks || []
+        }
+      });
+
+      // Do NOT return password or face descriptor in response
+      return res.status(201).json({
+        success: true,
+        message: "Registration successful",
+        user: { id: newUser._id, email: newUser.email }
+      });
+    } catch (err) {
+      console.error("Registration error:", err);
+      return res.status(500).json({ success: false, message: "An error occurred" });
     }
-  });
+  }
+);
+
+// Login - returns JWT on success
+app.post(
+  "/login",
+  [
+    body("email").isEmail().normalizeEmail(),
+    body("password").isString().isLength({ min: 6 })
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, message: "Invalid input" });
+
+    const { email, password } = req.body;
+
+    try {
+      // find user including password
+      const user = await FormDataModel.findOne({ email: email }).lean();
+      if (!user || !user.password) {
+        // generic response to avoid enumeration
+        return res.status(401).json({ success: false, message: "Invalid credentials" });
+      }
+
+      const match = await bcrypt.compare(password, user.password);
+      if (!match) {
+        return res.status(401).json({ success: false, message: "Invalid credentials" });
+      }
+
+      // Issue JWT (subject = user id)
+      const token = jwt.sign({ sub: user._id, email: user.email }, JWT_SECRET, { expiresIn: "6h" });
+
+      // Return token (frontend must include Authorization: Bearer <token> on protected requests)
+      return res.json({ success: true, message: "Credentials verified", token });
+    } catch (err) {
+      console.error("Login error:", err);
+      return res.status(500).json({ success: false, message: "An error occurred" });
+    }
+  }
+);
+
+// Face verification - protected route: require the JWT from login
+// Frontend must send Authorization: Bearer <token>
+// If you need an unauthenticated version, it's possible to support it, but authenticated flow is safer.
+app.post(
+  "/verify-face",
+  requireAuth,
+  [
+    body("faceData").custom(fd => fd && Array.isArray(fd.descriptor) && fd.descriptor.length > 0)
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, message: "Invalid input" });
+
+    try {
+      // Use email from authenticated token (prevents tampering / enumeration)
+      const userEmail = req.user && req.user.email;
+      if (!userEmail) return res.status(401).json({ success: false, message: "Authentication required" });
+
+      const { faceData } = req.body;
+
+      const user = await FormDataModel.findOne({ email: userEmail }).lean();
+      if (!user || !user.faceData || !user.faceData.descriptor) {
+        // generic failure
+        return res.status(400).json({ success: false, message: "Face verification failed" });
+      }
+
+      const distance = calculateFaceDistance(faceData.descriptor, user.faceData.descriptor);
+      if (distance < FACE_MATCH_THRESHOLD) {
+        // success
+        return res.json({ success: true, message: "Face verification successful" });
+      } else {
+        return res.status(401).json({ success: false, message: "Face verification failed" });
+      }
+    } catch (err) {
+      console.error("Face verification error:", err);
+      return res.status(500).json({ success: false, message: "An error occurred" });
+    }
+  }
+);
+
+// Example protected endpoint (if you later need to mark DB hasVoted or record audits)
+app.post("/record-vote", requireAuth, async (req, res) => {
+  // This endpoint is an example: implement logic to record txHash / audit after on-chain vote is mined.
+  // Ensure you validate inputs and that only authorized callers can write.
+  res.json({ success: true, message: "Not implemented in this example" });
 });
 
-app.post("/verify-face", async (req, res) => {
-  const { email, faceData } = req.body;
+// Fallback & health
+app.get("/", (req, res) => res.json({ success: true, message: "Backend running" }));
 
-  if (!faceData || !faceData.descriptor) {
-    return res.status(400).json({ 
-      success: false, 
-      message: "Face data is required for verification" 
-    });
-  }
+// Global error handling can be added here if desired (next, err) => { ... }
 
-  try {
-    const user = await FormDataModel.findOne({ email: email });
-    
-    if (!user || !user.faceData || !user.faceData.descriptor) {
-      return res.json({ 
-        success: false, 
-        message: "No face data found for this user" 
-      });
-    }
-
-    const distance = calculateFaceDistance(
-      faceData.descriptor,
-      user.faceData.descriptor
-    );
-
-    // Threshold for face match (lower means stricter matching)
-    const threshold = 0.6;
-
-    if (distance < threshold) {
-      res.json({ 
-        success: true, 
-        message: "Face verification successful" 
-      });
-    } else {
-      res.json({ 
-        success: false, 
-        message: "Face verification failed" 
-      });
-    }
-  } catch (error) {
-    console.error("Face verification error:", error);
-    res.status(500).json({ 
-      success: false, 
-      message: "An error occurred during face verification" 
-    });
-  }
-});
-
-app.listen(3001, () => {
-  console.log("Server listining on http://127.0.0.1:3001");
+app.listen(PORT, () => {
+  console.log(`Server listening on http://127.0.0.1:${PORT}`);
 });
