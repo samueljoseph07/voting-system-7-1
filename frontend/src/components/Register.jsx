@@ -31,7 +31,7 @@ const Register = () => {
     setError(null);
 
     try {
-      const result = await axios.post("http://localhost:3001/register", { 
+      const result = await axios.post("/register", { 
         name, 
         email, 
         password,

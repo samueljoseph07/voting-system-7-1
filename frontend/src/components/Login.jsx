@@ -1,9 +1,10 @@
+// frontend/src/components/Login.jsx
 import "bootstrap/dist/css/bootstrap.min.css";
 import { useState, useRef } from "react";
 import { Link } from "react-router-dom";
-import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import FaceCapture from "./FaceCapture";
+import api from "../utils/api"; // <<-- use api wrapper
 
 const Login = () => {
   const [email, setEmail] = useState();
@@ -16,25 +17,28 @@ const Login = () => {
     event.preventDefault();
 
     try {
-      const result = await axios.post("http://localhost:3001/login", { email, password });
-      
-      if (result.data.success) {
-        // If credentials are correct, show face verification
+      const result = await api.post("/login", { email, password });
+
+      if (result.data.success && result.data.token) {
+        // Save token securely in localStorage (or use more secure cookie approach in prod)
+        localStorage.setItem("token", result.data.token);
+
+        // Move to face verification step
         setShowFaceVerification(true);
       } else {
         alert("Incorrect email or password! Please try again.");
       }
     } catch (err) {
-      console.log(err);
+      console.error(err);
       alert("An error occurred during login.");
     }
   };
 
   const handleFaceVerification = async (capturedFaceData) => {
     try {
-      const result = await axios.post("http://localhost:3001/verify-face", {
-        email,
-        faceData: capturedFaceData
+      // api.post will automatically attach Authorization header from localStorage
+      const result = await api.post("/verify-face", {
+        faceData: capturedFaceData,
       });
 
       if (result.data.success) {
@@ -44,7 +48,7 @@ const Login = () => {
         alert("Face verification failed! Please try again.");
       }
     } catch (err) {
-      console.log(err);
+      console.error(err);
       alert("An error occurred during face verification.");
     }
   };
