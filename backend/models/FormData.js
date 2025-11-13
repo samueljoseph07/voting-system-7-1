@@ -1,18 +1,41 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-const FormDataSchema = new mongoose.Schema({
-    name: String,
-    email: String,
-    password: String,
+
+const FormDataSchema = new mongoose.Schema(
+  {
+    name: { type: String, trim: true },
+
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true
+    },
+
+    // Do NOT return password by default (select: false)
+    password: {
+      type: String,
+      required: true,
+      select: false
+    },
+
     faceData: {
-        descriptor: [Number],
-        landmarks: [{
-            x: Number,
-            y: Number
-        }]
+      // OPTIONAL: this field can be encrypted before saving if you add a pre-save hook
+      descriptor: {
+        type: [Number], // 128-dimensional embedding
+        required: true
+      },
+
+      landmarks: [
+        {
+          x: Number,
+          y: Number
+        }
+      ]
     }
-});
+  },
+  { timestamps: true } // createdAt & updatedAt
+);
 
-const FormDataModel = mongoose.model('log_reg_form', FormDataSchema);
-
-module.exports = FormDataModel;
+module.exports = mongoose.model("User", FormDataSchema);
